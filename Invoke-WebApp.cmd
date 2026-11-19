@@ -20,20 +20,45 @@ if (-not $htmlMatch.Success) {
 
 $htmlPath = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "Parcel-Tracker.html")
 [System.IO.File]::WriteAllText($htmlPath, $htmlMatch.Groups[1].Value, [System.Text.Encoding]::UTF8)
-Start-Process $htmlPath
 
+$appProfile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "ParcelTrackerEdgeProfile")
+if (Test-Path $appProfile) { Remove-Item $appProfile -Recurse -Force -ErrorAction SilentlyContinue }
+
+$appArgs = @(
+    "--app=file:///$($htmlPath -replace '\\', '/')"
+    "--guest"
+    "--window-size=680,550"
+    "--window-position=140,90"
+)
+
+$edgePath = @(
+    "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
+    "${env:ProgramFiles}\Microsoft\Edge\Application\msedge.exe"
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+$chromePath = @(
+    "${env:ProgramFiles}\Google\Chrome\Application\chrome.exe",
+    "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe"
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+if ($edgePath) {
+    Start-Process -FilePath $edgePath -ArgumentList $appArgs
+} elseif ($chromePath) {
+    Start-Process -FilePath $chromePath -ArgumentList $appArgs
+} else {
+    Start-Process $htmlPath
+}
+
+$listenerCode = @'
 $listener = New-Object System.Net.HttpListener
 $listener.Prefixes.Add('http://localhost:8787/')
-$listener.Start()
-Write-Host 'Local proxy running on http://localhost:8787/?url=...' -ForegroundColor Green
-Write-Host "Opened UI: $htmlPath" -ForegroundColor Cyan
+try { $listener.Start() } catch { exit 1 }
 
 while ($listener.IsListening) {
     $ctx = $listener.GetContext()
     $req = $ctx.Request
     $res = $ctx.Response
 
-    # CORS headers so your local HTML page can read the response
     $res.Headers.Add('Access-Control-Allow-Origin', '*')
     $res.Headers.Add('Access-Control-Allow-Methods', 'GET, OPTIONS')
     $res.Headers.Add('Access-Control-Allow-Headers', 'Content-Type, Ocp-Apim-Subscription-Key, X-Requested-With, Accept')
@@ -86,6 +111,14 @@ while ($listener.IsListening) {
         $res.Close()
     }
 }
+'@
+
+$escapedCode = $listenerCode.Replace("'", "''")
+Start-Process -FilePath "powershell.exe" -WindowStyle Hidden -ArgumentList @(
+    "-NoProfile",
+    "-ExecutionPolicy", "Bypass",
+    "-Command", "iex '$escapedCode'"
+)
 
 <#
 __HTML_START__
@@ -108,80 +141,83 @@ __HTML_START__
 
     * { box-sizing: border-box; }
 
-    body {
+    html, body {
       margin: 0;
-      min-height: 100vh;
-      display: grid;
-      place-items: center;
+      padding: 0;
+      height: 100%;
       background: var(--bg);
       font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
       color: var(--dark);
-      padding: 16px;
+      overflow: hidden;
     }
 
     .window {
       width: 100%;
-      max-width: 720px;
+      height: 100%;
       background: var(--bg);
-      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.14);
-      border: 1px solid var(--border);
-      overflow: hidden;
+      display: flex;
+      flex-direction: column;
     }
 
     .header {
       background: var(--dark);
       color: #fff;
-      height: 58px;
-      padding: 0 20px;
+      height: 48px;
+      padding: 0 16px;
       display: flex;
       align-items: center;
       justify-content: space-between;
+      flex-shrink: 0;
     }
 
     .header-title {
-      font-size: 20px;
+      font-size: 18px;
       font-weight: 600;
       letter-spacing: 0.2px;
     }
 
     .header-sub {
       color: var(--accent);
-      font-size: 13px;
+      font-size: 12.5px;
       font-weight: 500;
     }
 
     .accent-bar {
       height: 3px;
       background: var(--accent);
+      flex-shrink: 0;
     }
 
     .body {
-      padding: 16px 20px 20px;
+      padding: 12px 16px 14px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
     }
 
     .row {
       display: flex;
-      gap: 20px;
-      flex-wrap: wrap;
+      gap: 14px;
     }
 
     .field {
-      flex: 1 1 260px;
+      flex: 1 1 0;
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 4px;
     }
 
     label {
-      font-size: 14px;
+      font-size: 13px;
       font-weight: 500;
       color: var(--dark);
     }
 
     input[type="text"] {
-      height: 34px;
-      padding: 4px 10px;
-      font-size: 15px;
+      height: 32px;
+      padding: 4px 9px;
+      font-size: 14px;
       font-family: inherit;
       background: #fff;
       color: var(--dark);
@@ -194,53 +230,52 @@ __HTML_START__
     }
 
     .hint {
-      margin-top: 10px;
-      font-size: 13px;
+      margin-top: 8px;
+      font-size: 12px;
       color: var(--muted);
     }
 
     .proxy-row {
-      margin-top: 10px;
+      margin-top: 8px;
       display: flex;
       align-items: center;
       gap: 8px;
-      flex-wrap: wrap;
       font-size: 12px;
       color: var(--muted);
     }
 
     .proxy-row input {
-      height: 26px;
+      height: 25px;
       font-size: 12px;
-      padding: 2px 8px;
+      padding: 2px 7px;
       border: 1px solid var(--border);
       color: var(--dark);
     }
 
     .proxy-base {
-      flex: 1 1 240px;
+      flex: 1 1 auto;
     }
 
     .proxy-key {
-      width: 150px;
+      width: 140px;
     }
 
     .actions {
-      margin-top: 14px;
+      margin-top: 10px;
       display: flex;
       align-items: center;
-      gap: 16px;
-      min-height: 40px;
+      gap: 14px;
+      min-height: 36px;
     }
 
     button#btnTrack {
-      width: 160px;
-      height: 40px;
+      width: 145px;
+      height: 36px;
       background: var(--dark);
       color: #fff;
       border: 0;
       font-family: inherit;
-      font-size: 15px;
+      font-size: 14px;
       font-weight: 600;
       cursor: pointer;
       transition: background-color 0.15s ease;
@@ -256,22 +291,23 @@ __HTML_START__
     }
 
     .status {
-      font-size: 14px;
+      font-size: 13.5px;
       color: var(--dark);
       font-weight: 500;
     }
 
     pre#out {
-      margin: 14px 0 0;
+      margin: 10px 0 0;
       width: 100%;
-      height: 320px;
+      flex: 1;
+      min-height: 160px;
       background: var(--con-bg);
       color: var(--con-fg);
       border: 1px solid #111316;
-      padding: 10px 12px;
+      padding: 8px 10px;
       font-family: Consolas, "Courier New", monospace;
-      font-size: 13px;
-      line-height: 1.45;
+      font-size: 12.5px;
+      line-height: 1.4;
       overflow: auto;
       white-space: pre;
     }
@@ -318,6 +354,8 @@ __HTML_START__
   </div>
 
   <script>
+    try { window.resizeTo(680, 550); } catch (e) {}
+
     const IPOST_KEY = "5ccb5b137e7444d885be752eda7f767a";
 
     const form = document.getElementById("trackForm");
@@ -455,10 +493,10 @@ __HTML_START__
 
     async function trackChita(num, phone) {
       const step1Url =
-	  "https://chita-il.com/RunCom.Server/Request.aspx?APPNAME=RUN&PRGNAME=ship_locate_num_and_phone&ARGUMENTS=-N" +
-	  encodeURIComponent(num) +
-	  ",-A" +
-	  encodeURIComponent(phone);
+        "https://chita-il.com/RunCom.Server/Request.aspx?APPNAME=RUN&PRGNAME=ship_locate_num_and_phone&ARGUMENTS=-N" +
+        encodeURIComponent(num) +
+        ",-A" +
+        encodeURIComponent(phone);
 
       const xmlText = await fetchText(step1Url, {
         headers: {
