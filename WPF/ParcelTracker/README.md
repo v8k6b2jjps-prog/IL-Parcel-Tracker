@@ -1,12 +1,13 @@
 # Parcel Tracker (C# / WPF)
 
-Tracks **HFD**, **Israel Post (דואר ישראל)** and **Chita (ציטה)** shipments.
-The carrier is auto-detected from the tracking-number prefix:
+Tracks **HFD**, **Israel Post (דואר ישראל)**, **Chita (ציטה)** and **GCX**
+shipments. The carrier is auto-detected from the tracking-number prefix:
 
 | Prefix | Carrier       | Needs phone |
 |--------|---------------|-------------|
 | `ED…`  | HFD           | yes         |
 | `AE…`  | Chita         | yes         |
+| `SN…`  | GCX           | no          |
 | `RS…`  | Israel Post   | no          |
 
 ## Build & run
@@ -42,5 +43,10 @@ Change `<TargetFramework>` in `ParcelTracker.csproj` to `net6.0-windows`
   `ship_rand_num` token, then a step-2 HTML page carries the timeline
   (auto-decoded as UTF-8, falling back to Windows-1255).
 - **Israel Post** calls the MyPost JSON API and shows `Date | Status | Detail`.
+- **GCX** is an ASP.NET WebForms postback, so it uses a cookie-aware
+  `HttpClient`: a step-1 GET harvests `__VIEWSTATE`/`__VIEWSTATEGENERATOR`/
+  `__EVENTVALIDATION` plus the `ASP.NET_SessionId` cookie, then a step-2 POST
+  submits the number. It hands off to YDM for the last mile and shows both the
+  English and Hebrew event text (no phone required).
 
 The Israel Post `Ocp-Apim-Subscription-Key` is the site's public frontend key.

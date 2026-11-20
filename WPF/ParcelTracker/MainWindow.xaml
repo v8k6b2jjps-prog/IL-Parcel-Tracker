@@ -74,7 +74,7 @@
             <Border Background="#253444" Padding="22,14">
                 <StackPanel>
                     <TextBlock Text="Parcel Tracker" Foreground="White" FontSize="20" FontWeight="Bold"/>
-                    <TextBlock Text="HFD  /  Israel Post  /  Chita" Foreground="#EE685F"
+                    <TextBlock Text="HFD  /  Israel Post  /  Chita  /  GCX" Foreground="#EE685F"
                                FontSize="12" Margin="0,2,0,0"/>
                 </StackPanel>
             </Border>
@@ -108,7 +108,7 @@
 
             <!-- Hint -->
             <TextBlock Grid.Row="1" Margin="2,12,0,0" Foreground="#828A94"
-                       Text="Auto-detect:   ED -&gt; HFD      AE -&gt; Chita      RS -&gt; Israel Post"/>
+                       Text="Auto-detect:   ED -&gt; HFD    AE -&gt; Chita    SN -&gt; GCX    RS -&gt; Israel Post"/>
 
             <!-- Button + status -->
             <Grid Grid.Row="2" Margin="0,16,0,0">

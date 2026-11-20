@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -36,6 +36,7 @@ namespace ParcelTracker
         {
             if (n.StartsWith("ED")) return "HFD";
             if (n.StartsWith("AE")) return "Chita";
+            if (n.StartsWith("SN")) return "GCX";
             if (n.StartsWith("RS")) return "Post";
             if (Regex.IsMatch(n, "^[A-Z]{2}\\d{6,}[A-Z]?$")) return "Post"; // S10-style international mail
             return null;
@@ -190,6 +191,98 @@ namespace ParcelTracker
             return res;
         }
 
+        // ---------- GCX (info.gcx.co.il — ASP.NET postback: GET tokens, then POST) ----------
+        static string GcxSpan(string html, string id)
+        {
+            var m = Regex.Match(html, "<span[^>]*id=\"" + Regex.Escape(id) + "\"[^>]*>(.*?)</span>", RegexOptions.Singleline);
+            if (!m.Success) return "";
+            string t = Regex.Replace(m.Groups[1].Value, "<[^>]+>", " ");
+            return Regex.Replace(WebUtility.HtmlDecode(t), "\\s{2,}", " ").Trim();
+        }
+
+        async Task<Result> TrackGcx(string num)
+        {
+            const string gurl = "https://info.gcx.co.il/gcx_event/Default.aspx";
+
+            // GCX ties VIEWSTATE to an ASP.NET session cookie, so use a cookie-aware client.
+            using var handler = new HttpClientHandler
+            {
+                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
+                CookieContainer = new CookieContainer(),
+                UseCookies = true
+            };
+            using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
+
+            // Step 1 — GET to harvest tokens + the session cookie.
+            string html1;
+            using (var getReq = new HttpRequestMessage(HttpMethod.Get, gurl))
+            {
+                getReq.Headers.TryAddWithoutValidation("User-Agent", UA);
+                getReq.Headers.TryAddWithoutValidation("Accept", "text/html,*/*");
+                using var getResp = await http.SendAsync(getReq);
+                getResp.EnsureSuccessStatusCode();
+                html1 = Encoding.UTF8.GetString(await getResp.Content.ReadAsByteArrayAsync());
+            }
+
+            string Pick(string name)
+            {
+                var m = Regex.Match(html1, "name=\"" + name + "\"[^>]*?value=\"([^\"]*)\"");
+                return m.Success ? WebUtility.HtmlDecode(m.Groups[1].Value) : "";
+            }
+            string vs = Pick("__VIEWSTATE");
+            if (string.IsNullOrEmpty(vs)) return NotFound("GCX: no __VIEWSTATE (page changed or blocked)");
+
+            // Step 2 — POST the number with the harvested tokens (cookie flows automatically).
+            var form = new Dictionary<string, string>
+            {
+                ["__EVENTTARGET"] = "",
+                ["__EVENTARGUMENT"] = "",
+                ["__VIEWSTATE"] = vs,
+                ["__VIEWSTATEGENERATOR"] = Pick("__VIEWSTATEGENERATOR"),
+                ["__EVENTVALIDATION"] = Pick("__EVENTVALIDATION"),
+                ["tbHAWB_NUM"] = num,
+                ["BtnTrack"] = "TRACK / עקוב"
+            };
+            byte[] bytes;
+            using (var postReq = new HttpRequestMessage(HttpMethod.Post, gurl) { Content = new FormUrlEncodedContent(form) })
+            {
+                postReq.Headers.TryAddWithoutValidation("User-Agent", UA);
+                postReq.Headers.TryAddWithoutValidation("Accept", "text/html,*/*");
+                postReq.Headers.TryAddWithoutValidation("Referer", gurl);
+                postReq.Headers.TryAddWithoutValidation("Origin", "https://info.gcx.co.il");
+                using var postResp = await http.SendAsync(postReq);
+                postResp.EnsureSuccessStatusCode();
+                bytes = await postResp.Content.ReadAsByteArrayAsync();
+            }
+            string html = DecodeHtml(bytes);
+
+            var idx = Regex.Matches(html, "id=\"lbEventDescrEng(\\d+)\"")
+                           .Select(m => int.Parse(m.Groups[1].Value)).Distinct().OrderBy(x => x).ToList();
+            var lines = new List<string>();
+            foreach (int i in idx)
+            {
+                string eng = GcxSpan(html, "lbEventDescrEng" + i);
+                string heb = GcxSpan(html, "lbEventDescrHeb" + i);
+                string date = GcxSpan(html, "lbEventDate" + i);
+                string time = GcxSpan(html, "lbEventTime" + i);
+                string st = !string.IsNullOrEmpty(heb)
+                    ? (!string.IsNullOrEmpty(eng) ? eng + " / " + heb : heb)
+                    : eng;
+                lines.Add($"{date}  {time}   {st}");
+            }
+            string cur = GcxSpan(html, "LbCurrentStatusEng");
+            if (string.IsNullOrEmpty(cur) && lines.Count == 0) return NotFound("not found / no data");
+
+            string company = GcxSpan(html, "lbDeliveryCompnyName");
+            string via = string.IsNullOrEmpty(company) ? "" : "via " + company;
+
+            var res = new Result { Found = true, Status = string.IsNullOrEmpty(via) ? "GCX - found" : "GCX - found  " + via };
+            res.Lines.Add($"GCX - {num}    {via}".TrimEnd());
+            res.Lines.Add(new string('-', 80));
+            res.Lines.AddRange(lines);
+            return res;
+        }
+
         static void FindEventArray(JsonElement el, ref JsonElement best, ref int bestCount)
         {
             if (el.ValueKind == JsonValueKind.Array)
@@ -239,7 +332,7 @@ namespace ParcelTracker
             if (carrier == null)
             {
                 string seen = num.Length >= 2 ? num.Substring(0, 2) : num;
-                TxtOut.Text = $"Carrier not recognized from prefix '{seen}' (expected ED / AE / RS).";
+                TxtOut.Text = $"Carrier not recognized from prefix '{seen}' (expected ED / AE / SN / RS).";
                 return;
             }
             if ((carrier == "HFD" || carrier == "Chita") && string.IsNullOrEmpty(phone))
@@ -255,6 +348,7 @@ namespace ParcelTracker
                 Result r =
                     carrier == "HFD" ? await TrackHfd(num, phone) :
                     carrier == "Chita" ? await TrackChita(num, phone) :
+                    carrier == "GCX" ? await TrackGcx(num) :
                     await TrackPost(num);
 
                 TxtStatus.Text = r.Status;

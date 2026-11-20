@@ -49,6 +49,7 @@ function Detect-Carrier([string]$num) {
     $n = Normalize-Num $num
     if ($n -like 'ED*') { return 'HFD' }
     if ($n -like 'AE*') { return 'Chita' }
+    if ($n -like 'SN*') { return 'GCX' }
     if ($n -like 'RS*') { return 'Post' }
     if ($n -match '^[A-Z]{2}\d{6,}[A-Z]?$') { return 'Post' }   # S10-style international mail
     return $null
@@ -139,6 +140,60 @@ function Invoke-IsraelPostTrack([string]$item) {
     return @{ Found = ($events.Count -gt 0); Events = $events; Raw = $json }
 }
 
+# ---------------- GCX (info.gcx.co.il — ASP.NET postback: GET tokens, then POST) ----------------
+function Get-GcxSpan([string]$html, [string]$id) {
+    $m = [regex]::Match($html, '(?s)<span[^>]*id="' + [regex]::Escape($id) + '"[^>]*>(.*?)</span>')
+    if (-not $m.Success) { return '' }
+    $t = ($m.Groups[1].Value -replace '<[^>]+>', ' ')
+    (([System.Net.WebUtility]::HtmlDecode($t)) -replace '\s{2,}', ' ').Trim()
+}
+
+function Invoke-GcxTrack([string]$num) {
+    $gurl = 'https://info.gcx.co.il/gcx_event/Default.aspx'
+    $r1 = Invoke-WebRequest -Uri $gurl -Headers @{ 'User-Agent' = $UA; 'Accept' = 'text/html,*/*' } `
+            -SessionVariable gs -UseBasicParsing -TimeoutSec 25 -ErrorAction Stop
+    $html1 = $r1.Content
+
+    $pick = {
+        param([string]$name)
+        $m = [regex]::Match($html1, 'name="' + $name + '"[^>]*?value="([^"]*)"')
+        if ($m.Success) { [System.Net.WebUtility]::HtmlDecode($m.Groups[1].Value) } else { '' }
+    }
+    $vs = & $pick '__VIEWSTATE'
+    if (-not $vs) { return @{ Found = $false; Message = 'no __VIEWSTATE (GCX page changed or blocked)' } }
+
+    $body = [ordered]@{
+        '__EVENTTARGET'        = ''
+        '__EVENTARGUMENT'      = ''
+        '__VIEWSTATE'          = $vs
+        '__VIEWSTATEGENERATOR' = (& $pick '__VIEWSTATEGENERATOR')
+        '__EVENTVALIDATION'    = (& $pick '__EVENTVALIDATION')
+        'tbHAWB_NUM'           = $num
+        'BtnTrack'             = 'TRACK / עקוב'
+    }
+    $r2 = Invoke-WebRequest -Uri $gurl -Method POST -Body $body -WebSession $gs `
+            -Headers @{ 'User-Agent' = $UA; 'Accept' = 'text/html,*/*'; 'Referer' = $gurl; 'Origin' = 'https://info.gcx.co.il' } `
+            -UseBasicParsing -TimeoutSec 25 -ErrorAction Stop
+    $html = Decode-Html $r2.RawContentStream.ToArray()
+
+    $idx = @([regex]::Matches($html, 'id="lbEventDescrEng(\d+)"') | ForEach-Object { [int]$_.Groups[1].Value } | Sort-Object -Unique)
+    $events = @(foreach ($i in $idx) {
+        $eng = Get-GcxSpan $html ('lbEventDescrEng' + $i)
+        $heb = Get-GcxSpan $html ('lbEventDescrHeb' + $i)
+        $st  = if ($heb) { if ($eng) { "$eng / $heb" } else { $heb } } else { $eng }
+        [pscustomobject]@{
+            Date   = (Get-GcxSpan $html ('lbEventDate' + $i))
+            Time   = (Get-GcxSpan $html ('lbEventTime' + $i))
+            Status = $st
+        }
+    })
+    $cur = Get-GcxSpan $html 'LbCurrentStatusEng'
+    if (-not $cur -and $events.Count -eq 0) { return @{ Found = $false; Message = 'not found / no data' } }
+    $company = Get-GcxSpan $html 'lbDeliveryCompnyName'
+    $via = if ($company) { "via $company" } else { '' }
+    return @{ Found = $true; InternalNum = $via; Events = $events }
+}
+
 # ================= GUI =================
 $dark    = [Drawing.Color]::FromArgb(37, 52, 68)
 $accent  = [Drawing.Color]::FromArgb(238, 104, 95)
@@ -165,7 +220,7 @@ $title.Text = 'Parcel Tracker'; $title.ForeColor = [Drawing.Color]::White
 $title.Font = New-Object Drawing.Font('Segoe UI Semibold', 15, [Drawing.FontStyle]::Bold)
 $title.TextAlign = 'MiddleLeft'; $title.Dock = 'Fill'; $title.Padding = New-Object Windows.Forms.Padding(20, 0, 0, 0)
 $sub = New-Object Windows.Forms.Label
-$sub.Text = 'HFD  /  Israel Post  /  Cheetah'; $sub.ForeColor = $accent
+$sub.Text = 'HFD  /  Israel Post  /  Cheetah  /  GCX'; $sub.ForeColor = $accent
 $sub.Font = New-Object Drawing.Font('Segoe UI', 9); $sub.TextAlign = 'MiddleRight'
 $sub.Dock = 'Right'; $sub.Width = 240; $sub.Padding = New-Object Windows.Forms.Padding(0, 0, 20, 0)
 $header.Controls.AddRange(@($sub, $title))
@@ -188,7 +243,7 @@ $txtPhone.Location = New-Object Drawing.Point(370, 100); $txtPhone.Size = New-Ob
 $txtPhone.Font = New-Object Drawing.Font('Segoe UI', 11); $txtPhone.BorderStyle = 'FixedSingle'
 
 $lblHint = New-Object Windows.Forms.Label
-$lblHint.Text = 'Auto-detect:   ED -> HFD      AE -> Cheetah      RS -> Israel Post'
+$lblHint.Text = 'Auto-detect:   ED -> HFD    AE -> Cheetah    SN -> GCX    RS -> Israel Post'
 $lblHint.ForeColor = $muted; $lblHint.Location = New-Object Drawing.Point(20, 136); $lblHint.AutoSize = $true
 
 $btn = New-Object Windows.Forms.Button
@@ -231,7 +286,7 @@ $btn.Add_Click({
     if (-not $carrier) {
         $lblStatus.Text = ''
         $seen = if ($num.Length -ge 2) { $num.Substring(0, 2) } else { $num }
-        Write-Out "Carrier not recognized from prefix '$seen' (expected ED / AE / RS)."
+        Write-Out "Carrier not recognized from prefix '$seen' (expected ED / AE / SN / RS)."
         return
     }
     if (($carrier -eq 'HFD' -or $carrier -eq 'Chita') -and -not $phone) {
@@ -252,6 +307,15 @@ $btn.Add_Click({
             }
             'Chita' { Show-RunComResult 'Chita' $num (Invoke-ChitaTrack $num $phone) }
             'HFD'   { Show-RunComResult 'HFD'   $num (Invoke-HfdTrack  $num $phone) }
+            'GCX'   {
+                $res = Invoke-GcxTrack $num
+                $lblStatus.Text = ''
+                if (-not $res.Found) { Write-Out ('Not found: ' + $res.Message); break }
+                $lblStatus.Text = "GCX - found  $($res.InternalNum)"
+                Write-Out ("GCX - $num    $($res.InternalNum)")
+                Write-Out ('-' * 80)
+                foreach ($e in $res.Events) { Write-Out ('{0}  {1}   {2}' -f $e.Date, $e.Time, $e.Status) }
+            }
         }
     }
     catch { $lblStatus.Text = ''; Write-Out ('Error: ' + $_.Exception.Message) }

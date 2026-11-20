@@ -97,8 +97,8 @@ try { $listener.Start() } catch { exit 1 }
 $ar = $listener.BeginGetContext($null, $null)   # async arm (callback-style)
 
 do {
-    # Wait up to 20s; returns immediately when a request arrives.
-    $gotCommand = $ar.AsyncWaitHandle.WaitOne(20000)
+    # Wait up to 60s; returns immediately when a request arrives.
+    $gotCommand = $ar.AsyncWaitHandle.WaitOne(60000)
 
     if ($gotCommand) {
         $ctx = $listener.EndGetContext($ar)
@@ -112,6 +112,35 @@ do {
         if ($req.HttpMethod -eq 'OPTIONS') {
             $res.StatusCode = 204
             $res.Close()
+        }
+        elseif ($req.Url.AbsolutePath -eq '/gcx') {
+            # GCX (gcx.co.il) is an ASP.NET postback: GET the page for tokens, then POST the number.
+            try {
+                $gnum = $req.QueryString['num']
+                $gurl = 'https://info.gcx.co.il/gcx_event/Default.aspx'
+                $gua  = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36'
+                $g1 = Invoke-WebRequest -Uri $gurl -UserAgent $gua -SessionVariable gsess -UseBasicParsing -TimeoutSec 25 -ErrorAction Stop
+                $gh = $g1.Content
+                $vs = [System.Net.WebUtility]::HtmlDecode(([regex]::Match($gh, 'name="__VIEWSTATE"[^>]*?value="([^"]*)"')).Groups[1].Value)
+                $vg = ([regex]::Match($gh, 'name="__VIEWSTATEGENERATOR"[^>]*?value="([^"]*)"')).Groups[1].Value
+                $ev = [System.Net.WebUtility]::HtmlDecode(([regex]::Match($gh, 'name="__EVENTVALIDATION"[^>]*?value="([^"]*)"')).Groups[1].Value)
+                $gbody = [ordered]@{
+                    '__EVENTTARGET' = ''; '__EVENTARGUMENT' = '';
+                    '__VIEWSTATE' = $vs; '__VIEWSTATEGENERATOR' = $vg; '__EVENTVALIDATION' = $ev;
+                    'tbHAWB_NUM' = $gnum; 'BtnTrack' = 'TRACK / עקוב'
+                }
+                $g2 = Invoke-WebRequest -Uri $gurl -Method POST -Body $gbody -WebSession $gsess -UserAgent $gua -Headers @{ 'Referer' = $gurl; 'Origin' = 'https://info.gcx.co.il' } -UseBasicParsing -TimeoutSec 25 -ErrorAction Stop
+                $gbytes = $g2.RawContentStream.ToArray()
+                $res.ContentType = 'text/html; charset=utf-8'
+                $res.StatusCode = 200
+                $res.OutputStream.Write($gbytes, 0, $gbytes.Length)
+            }
+            catch {
+                $res.StatusCode = 502
+                $eb = [Text.Encoding]::UTF8.GetBytes($_.Exception.Message)
+                $res.OutputStream.Write($eb, 0, $eb.Length)
+            }
+            finally { $res.Close() }
         }
         elseif (-not $req.QueryString['url']) {
             $res.StatusCode = 400
@@ -166,7 +195,7 @@ do {
             }
         }
 
-        $ar = $listener.BeginGetContext($null, $null)    # re-arm for the next request
+        $ar = $listener.BeginGetContext($null, $null)   # re-arm for the next request
         $titleFound = $true                              # a live request means the window is open
     }
     else {
@@ -288,14 +317,14 @@ __HTML_START__
   <div class="window">
     <div class="header">
       <div class="header-title">Parcel Tracker</div>
-      <div class="header-sub">HFD &nbsp;/&nbsp; Israel Post &nbsp;/&nbsp; Cheetah</div>
+      <div class="header-sub">HFD &nbsp;/&nbsp; Israel Post &nbsp;/&nbsp; Cheetah &nbsp;/&nbsp; GCX</div>
     </div>
     <div class="accent-bar"></div>
 
     <div class="body">
       <form id="trackForm">
-        <label for="txtNum">Tracking numbers &mdash; paste a list or any text (ED&hellip; / AE&hellip; / RS&hellip; auto-extracted)</label>
-        <textarea id="txtNum" autocomplete="off" placeholder="ED004795367&#10;RS1352727496Y&#10;AE041971705"></textarea>
+        <label for="txtNum">Tracking numbers &mdash; paste a list or any text (ED&hellip; / AE&hellip; / SN&hellip; / RS&hellip; auto-extracted)</label>
+        <textarea id="txtNum" autocomplete="off" placeholder="ED004795367&#10;RS1352727496Y&#10;AE041971705&#10;SN8094856"></textarea>
         <div class="controls">
           <input id="txtPhone" type="text" autocomplete="off" placeholder="Phone (HFD / Cheetah)" />
           <button id="btnTrack" type="submit">Track all</button>
@@ -332,7 +361,7 @@ __HTML_START__
     const IPOST_KEY = "5ccb5b137e7444d885be752eda7f767a";
 
     // Pulls every ED.., AE.., RS..Y (and S10-style) token out of arbitrary text.
-    const TRACK_RX = /\b(?:ED\d{5,}|AE\d{5,}|RS\d{5,}[A-Z]{0,2}|[A-Z]{2}\d{6,}[A-Z]{1,2})\b/gi;
+    const TRACK_RX = /\b(?:ED\d{5,}|AE\d{5,}|SN\d{5,}|RS\d{5,}[A-Z]{0,2}|[A-Z]{2}\d{6,}[A-Z]{1,2})\b/gi;
 
     const form = document.getElementById("trackForm");
     const txtNum = document.getElementById("txtNum");
@@ -364,6 +393,7 @@ __HTML_START__
       const n = normalizeNum(num);
       if (n.startsWith("ED")) return "HFD";
       if (n.startsWith("AE")) return "Chita";
+      if (n.startsWith("SN")) return "GCX";
       if (n.startsWith("RS")) return "Post";
       if (/^[A-Z]{2}\d{6,}[A-Z]{0,2}$/.test(n)) return "Post";
       return null;
@@ -458,6 +488,37 @@ __HTML_START__
       return { Found: true, InternalNum: parsed.InternalNum, Events: parsed.Events };
     }
 
+    // ---- GCX (SN..): ASP.NET postback done server-side by the local proxy at /gcx ----
+    const GCX_BASE = PROXY_BASE.replace(/\?url=$/, "gcx?num=");
+    function gcxSpan(html, id) {
+      const m = html.match(new RegExp('<span[^>]*id="' + id + '"[^>]*>([\\s\\S]*?)</span>', "i"));
+      if (!m) return "";
+      return decodeHtmlEntities(m[1].replace(/<[^>]+>/g, " ")).replace(/\s{2,}/g, " ").trim();
+    }
+    async function trackGcx(num) {
+      const resp = await fetch(GCX_BASE + encodeURIComponent(num));
+      const html = await resp.text();
+      if (!resp.ok) return { Found: false, Message: "HTTP " + resp.status + (html ? ": " + html.slice(0, 120) : "") };
+      const curEng = gcxSpan(html, "LbCurrentStatusEng");
+      const idx = [...new Set([...html.matchAll(/id="lbEventDescrEng(\d+)"/g)].map((m) => +m[1]))].sort((a, b) => a - b);
+      const events = [];
+      for (const i of idx) {
+        const eng = gcxSpan(html, "lbEventDescrEng" + i);
+        const heb = gcxSpan(html, "lbEventDescrHeb" + i);
+        const date = gcxSpan(html, "lbEventDate" + i);
+        const time = gcxSpan(html, "lbEventTime" + i);
+        const status = heb ? (eng ? eng + " / " + heb : heb) : eng;
+        events.push({ Date: date, Time: time, Status: status });
+      }
+      if (!curEng && !events.length) return { Found: false, Message: "not found / no data" };
+      const company = gcxSpan(html, "lbDeliveryCompnyName");
+      const origin = gcxSpan(html, "lbOrigenCounteyEng") || gcxSpan(html, "lbOriginCountryEng");
+      let info = [];
+      if (company) info.push("via " + company);
+      if (origin) info.push("from " + origin);
+      return { Found: true, InternalNum: info.join("  "), Events: events };
+    }
+
     function findEventArray(node, bestRef) {
       if (Array.isArray(node)) {
         const objs = node.filter((x) => x && typeof x === "object" && !Array.isArray(x));
@@ -520,7 +581,7 @@ __HTML_START__
       const phone = normalizePhone(txtPhone.value);
       clearResults();
 
-      if (!nums.length) { writeOut("No tracking numbers found (expected ED…, AE…, RS…Y)."); return; }
+      if (!nums.length) { writeOut("No tracking numbers found (expected ED…, AE…, SN…, RS…Y)."); return; }
 
       const needPhone = nums.some((n) => { const c = detectCarrier(n); return c === "HFD" || c === "Chita"; });
       if (needPhone && !phone) { writeOut("A phone number is required for HFD / Cheetah numbers."); return; }
@@ -555,6 +616,17 @@ __HTML_START__
               writeOut(`Israel Post - ${num}: no updates`);
               if (res.Raw) writeOut(res.Raw);
               blockDivider();
+            }
+          } else if (carrier === "GCX") {
+            const res = await trackGcx(num);
+            if (res.Found) {
+              setCell(cell, res.Events.length ? res.Events[0].Status : "Found", true); ok++;
+              writeOut(`GCX - ${num}${res.InternalNum ? "    " + res.InternalNum : ""}`);
+              for (const e of res.Events) writeOut(`    ${e.Date}  ${e.Time}   ${e.Status}`);
+              blockDivider();
+            } else {
+              setCell(cell, res.Message || "Not found", false); bad++;
+              writeOut(`GCX - ${num}: ${res.Message || "not found"}`); blockDivider();
             }
           } else {
             const res = carrier === "Chita" ? await trackChita(num, phone) : await trackHfd(num, phone);
