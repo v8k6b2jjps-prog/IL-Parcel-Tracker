@@ -1,9 +1,11 @@
 ﻿<#
     Parcel Tracker  —  WinForms GUI. Auto-detects the carrier from the number prefix.
 
-      ED… -> HFD          (RunCom: number + phone)
-      AE… -> Chita        (RunCom: number + phone)
-      RS… -> Israel Post  (MyPost JSON: number only)
+      ED…  -> HFD          (RunCom: number + phone)
+      AE…  -> Chita        (RunCom: number + phone)
+      SN…  -> GCX          (Web postback: number only)
+      XLT… -> Exelot       (JSON API: number only)
+      RS…  -> Israel Post  (MyPost JSON: number only)
 
     Run:  right-click > Run with PowerShell
           or:  powershell -ExecutionPolicy Bypass -File .\HFD-Tracker.ps1
@@ -47,10 +49,11 @@ function Normalize-Num([string]$num) { ([regex]::Replace($num, '[^A-Za-z0-9]', '
 
 function Detect-Carrier([string]$num) {
     $n = Normalize-Num $num
-    if ($n -like 'ED*') { return 'HFD' }
-    if ($n -like 'AE*') { return 'Chita' }
-    if ($n -like 'SN*') { return 'GCX' }
-    if ($n -like 'RS*') { return 'Post' }
+    if ($n -like 'ED*')  { return 'HFD' }
+    if ($n -like 'AE*')  { return 'Chita' }
+    if ($n -like 'SN*')  { return 'GCX' }
+    if ($n -like 'XLT*') { return 'Exelot' }
+    if ($n -like 'RS*')  { return 'Post' }
     if ($n -match '^[A-Z]{2}\d{6,}[A-Z]?$') { return 'Post' }   # S10-style international mail
     return $null
 }
@@ -194,6 +197,23 @@ function Invoke-GcxTrack([string]$num) {
     return @{ Found = $true; InternalNum = $via; Events = $events }
 }
 
+# ---------------- Exelot (apiv2p.exelot.com JSON API) ----------------
+function Invoke-ExelotTrack([string]$num) {
+    $url = "https://apiv2p.exelot.com/api/v2/parcels/tracking/details/$([uri]::EscapeDataString($num))"
+    $h = @{ 'User-Agent' = $UA; 'Accept' = 'application/json, text/plain, */*' }
+    $data = Invoke-RestMethod -Uri $url -Headers $h -Method Get -ErrorAction Stop
+    $parcel = if ($data -is [System.Array]) { $data[0] } else { $data }
+    if (-not $parcel -or -not $parcel.statusHistory) {
+        return @{ Found = $false; Message = 'not found / no data' }
+    }
+    return @{
+        Found  = $true
+        Status = $parcel.parcelStatus
+        Return = $parcel.isReturn
+        Events = @($parcel.statusHistory)
+    }
+}
+
 # ================= GUI =================
 $dark    = [Drawing.Color]::FromArgb(37, 52, 68)
 $accent  = [Drawing.Color]::FromArgb(238, 104, 95)
@@ -220,9 +240,9 @@ $title.Text = 'Parcel Tracker'; $title.ForeColor = [Drawing.Color]::White
 $title.Font = New-Object Drawing.Font('Segoe UI Semibold', 15, [Drawing.FontStyle]::Bold)
 $title.TextAlign = 'MiddleLeft'; $title.Dock = 'Fill'; $title.Padding = New-Object Windows.Forms.Padding(20, 0, 0, 0)
 $sub = New-Object Windows.Forms.Label
-$sub.Text = 'HFD  /  Israel Post  /  Cheetah  /  GCX'; $sub.ForeColor = $accent
+$sub.Text = 'HFD / Post / Cheetah / GCX / Exelot'; $sub.ForeColor = $accent
 $sub.Font = New-Object Drawing.Font('Segoe UI', 9); $sub.TextAlign = 'MiddleRight'
-$sub.Dock = 'Right'; $sub.Width = 240; $sub.Padding = New-Object Windows.Forms.Padding(0, 0, 20, 0)
+$sub.Dock = 'Right'; $sub.Width = 260; $sub.Padding = New-Object Windows.Forms.Padding(0, 0, 20, 0)
 $header.Controls.AddRange(@($sub, $title))
 $accentBar = New-Object Windows.Forms.Panel
 $accentBar.Location = New-Object Drawing.Point(0, 58); $accentBar.Size = New-Object Drawing.Size(700, 3); $accentBar.BackColor = $accent
@@ -243,7 +263,7 @@ $txtPhone.Location = New-Object Drawing.Point(370, 100); $txtPhone.Size = New-Ob
 $txtPhone.Font = New-Object Drawing.Font('Segoe UI', 11); $txtPhone.BorderStyle = 'FixedSingle'
 
 $lblHint = New-Object Windows.Forms.Label
-$lblHint.Text = 'Auto-detect:   ED -> HFD    AE -> Cheetah    SN -> GCX    RS -> Israel Post'
+$lblHint.Text = 'Auto-detect:  ED -> HFD   AE -> Cheetah   SN -> GCX   XLT -> Exelot   RS -> Post'
 $lblHint.ForeColor = $muted; $lblHint.Location = New-Object Drawing.Point(20, 136); $lblHint.AutoSize = $true
 
 $btn = New-Object Windows.Forms.Button
@@ -286,7 +306,7 @@ $btn.Add_Click({
     if (-not $carrier) {
         $lblStatus.Text = ''
         $seen = if ($num.Length -ge 2) { $num.Substring(0, 2) } else { $num }
-        Write-Out "Carrier not recognized from prefix '$seen' (expected ED / AE / SN / RS)."
+        Write-Out "Carrier not recognized from prefix '$seen' (expected ED / AE / SN / XLT / RS)."
         return
     }
     if (($carrier -eq 'HFD' -or $carrier -eq 'Chita') -and -not $phone) {
@@ -315,6 +335,17 @@ $btn.Add_Click({
                 Write-Out ("GCX - $num    $($res.InternalNum)")
                 Write-Out ('-' * 80)
                 foreach ($e in $res.Events) { Write-Out ('{0}  {1}   {2}' -f $e.Date, $e.Time, $e.Status) }
+            }
+            'Exelot' {
+                $res = Invoke-ExelotTrack $num
+                $lblStatus.Text = ''
+                if (-not $res.Found) { Write-Out ('Not found: ' + $res.Message); break }
+                $lblStatus.Text = "Exelot - $($res.Status) (Return: $($res.Return))"
+                Write-Out ("Exelot - $num    Status: $($res.Status) | Return: $($res.Return)")
+                Write-Out ('-' * 80)
+                foreach ($e in $res.Events) {
+                    Write-Out ('{0,-22}  {1,-16} [{2}]  {3}' -f $e.date, $e.statusLocations, $e.statusCode, $e.statusText)
+                }
             }
         }
     }

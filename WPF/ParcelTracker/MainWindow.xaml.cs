@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -37,6 +37,7 @@ namespace ParcelTracker
             if (n.StartsWith("ED")) return "HFD";
             if (n.StartsWith("AE")) return "Chita";
             if (n.StartsWith("SN")) return "GCX";
+            if (n.StartsWith("XLT")) return "Exelot";
             if (n.StartsWith("RS")) return "Post";
             if (Regex.IsMatch(n, "^[A-Z]{2}\\d{6,}[A-Z]?$")) return "Post"; // S10-style international mail
             return null;
@@ -191,6 +192,52 @@ namespace ParcelTracker
             return res;
         }
 
+        // ---------- Exelot (apiv2p.exelot.com JSON API) ----------
+        async Task<Result> TrackExelot(string num)
+        {
+            string url = "https://apiv2p.exelot.com/api/v2/parcels/tracking/details/" + Uri.EscapeDataString(num);
+            var bytes = await GetBytes(url, r =>
+            {
+                r.Headers.TryAddWithoutValidation("Accept", "application/json, text/plain, */*");
+            });
+            string json = Encoding.UTF8.GetString(bytes);
+
+            using var jdoc = JsonDocument.Parse(json);
+            JsonElement parcel = jdoc.RootElement.ValueKind == JsonValueKind.Array
+                ? jdoc.RootElement.EnumerateArray().FirstOrDefault()
+                : jdoc.RootElement;
+
+            if (parcel.ValueKind != JsonValueKind.Object ||
+                !parcel.TryGetProperty("statusHistory", out var hist) ||
+                hist.ValueKind != JsonValueKind.Array)
+            {
+                return NotFound("no data");
+            }
+
+            var events = hist.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.Object).ToList();
+            if (events.Count == 0) return NotFound("no events");
+
+            string status = GetProp(parcel, "parcelStatus");
+            string isReturn = GetProp(parcel, "isReturn");
+
+            var res = new Result
+            {
+                Found = true,
+                Status = $"Exelot - {status} (Return: {isReturn})"
+            };
+            res.Lines.Add($"Exelot - {num}    Status: {status} | Return: {isReturn}");
+            res.Lines.Add(new string('-', 80));
+            foreach (var e in events)
+            {
+                string date = GetProp(e, "date");
+                string loc = GetProp(e, "statusLocations");
+                string code = GetProp(e, "statusCode");
+                string text = GetProp(e, "statusText");
+                res.Lines.Add($"{date,-22}  {loc,-16} [{code}]  {text}");
+            }
+            return res;
+        }
+
         // ---------- GCX (info.gcx.co.il — ASP.NET postback: GET tokens, then POST) ----------
         static string GcxSpan(string html, string id)
         {
@@ -332,7 +379,7 @@ namespace ParcelTracker
             if (carrier == null)
             {
                 string seen = num.Length >= 2 ? num.Substring(0, 2) : num;
-                TxtOut.Text = $"Carrier not recognized from prefix '{seen}' (expected ED / AE / SN / RS).";
+                TxtOut.Text = $"Carrier not recognized from prefix '{seen}' (expected ED / AE / SN / XLT / RS).";
                 return;
             }
             if ((carrier == "HFD" || carrier == "Chita") && string.IsNullOrEmpty(phone))
@@ -349,6 +396,7 @@ namespace ParcelTracker
                     carrier == "HFD" ? await TrackHfd(num, phone) :
                     carrier == "Chita" ? await TrackChita(num, phone) :
                     carrier == "GCX" ? await TrackGcx(num) :
+                    carrier == "Exelot" ? await TrackExelot(num) :
                     await TrackPost(num);
 
                 TxtStatus.Text = r.Status;

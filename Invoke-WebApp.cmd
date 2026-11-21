@@ -60,7 +60,7 @@ if ($edgePath) {
 
 $listenerCode = @'
 $port   = __PORT__
-$allow  = @('api.hfd.co.il', 'run.hfd.co.il', 'chita-il.com', 'apimftprd.israelpost.co.il')
+$allow  = @('api.hfd.co.il', 'run.hfd.co.il', 'chita-il.com', 'apimftprd.israelpost.co.il', 'apiv2p.exelot.com')
 $marker = 'Parcel Tracker'
 $htmlPath = '__HTMLPATH__'
 
@@ -317,14 +317,14 @@ __HTML_START__
   <div class="window">
     <div class="header">
       <div class="header-title">Parcel Tracker</div>
-      <div class="header-sub">HFD &nbsp;/&nbsp; Israel Post &nbsp;/&nbsp; Cheetah &nbsp;/&nbsp; GCX</div>
+      <div class="header-sub">HFD &nbsp;/&nbsp; Israel Post &nbsp;/&nbsp; Cheetah &nbsp;/&nbsp; GCX &nbsp;/&nbsp; Exelot</div>
     </div>
     <div class="accent-bar"></div>
 
     <div class="body">
       <form id="trackForm">
-        <label for="txtNum">Tracking numbers &mdash; paste a list or any text (ED&hellip; / AE&hellip; / SN&hellip; / RS&hellip; auto-extracted)</label>
-        <textarea id="txtNum" autocomplete="off" placeholder="ED004795367&#10;RS1352727496Y&#10;AE041971705&#10;SN8094856"></textarea>
+        <label for="txtNum">Tracking numbers &mdash; paste a list or any text (ED&hellip; / AE&hellip; / SN&hellip; / XLT&hellip; / RS&hellip; auto-extracted)</label>
+        <textarea id="txtNum" autocomplete="off" placeholder="ED004795367&#10;RS1352727496Y&#10;AE041971705&#10;SN8094856&#10;XLT988741138"></textarea>
         <div class="controls">
           <input id="txtPhone" type="text" autocomplete="off" placeholder="Phone (HFD / Cheetah)" />
           <button id="btnTrack" type="submit">Track all</button>
@@ -360,8 +360,8 @@ __HTML_START__
 
     const IPOST_KEY = "5ccb5b137e7444d885be752eda7f767a";
 
-    // Pulls every ED.., AE.., RS..Y (and S10-style) token out of arbitrary text.
-    const TRACK_RX = /\b(?:ED\d{5,}|AE\d{5,}|SN\d{5,}|RS\d{5,}[A-Z]{0,2}|[A-Z]{2}\d{6,}[A-Z]{1,2})\b/gi;
+    // Pulls every ED.., AE.., SN.., XLT.., RS..Y (and S10-style) token out of arbitrary text.
+    const TRACK_RX = /\b(?:ED\d{5,}|AE\d{5,}|SN\d{5,}|XLT\d{5,}|RS\d{5,}[A-Z]{0,2}|[A-Z]{2}\d{6,}[A-Z]{1,2})\b/gi;
 
     const form = document.getElementById("trackForm");
     const txtNum = document.getElementById("txtNum");
@@ -394,6 +394,7 @@ __HTML_START__
       if (n.startsWith("ED")) return "HFD";
       if (n.startsWith("AE")) return "Chita";
       if (n.startsWith("SN")) return "GCX";
+      if (n.startsWith("XLT")) return "Exelot";
       if (n.startsWith("RS")) return "Post";
       if (/^[A-Z]{2}\d{6,}[A-Z]{0,2}$/.test(n)) return "Post";
       return null;
@@ -441,18 +442,19 @@ __HTML_START__
       return text;
     }
 
-    // RunCom detail pages: decode UTF-8, fall back to Windows-1255 (the meta tag can lie).
-    async function fetchDecoded(url, options = {}) {
-      const resp = await fetch(proxiedUrl(url), options);
-      const buf = await resp.arrayBuffer();
-      if (!resp.ok) {
-        const t = new TextDecoder("utf-8").decode(buf).slice(0, 160);
-        throw new Error(`HTTP ${resp.status} ${resp.statusText}: ${t}`);
-      }
-      let s = new TextDecoder("utf-8", { fatal: false }).decode(buf);
-      if (s.includes("�")) s = new TextDecoder("windows-1255").decode(buf);
-      return s;
-    }
+	async function fetchDecoded(url, options = {}) {
+	  const resp = await fetch(proxiedUrl(url), options);
+	  const buf = await resp.arrayBuffer();
+	  if (!resp.ok) {
+		const t = new TextDecoder("utf-8").decode(buf).slice(0, 160);
+		throw new Error(`HTTP ${resp.status} ${resp.statusText}: ${t}`);
+	  }
+	  let s = new TextDecoder("utf-8", { fatal: false }).decode(buf);
+	  if (s.includes("\uFFFD") || (s.match(/[×׳]/g) || []).length >= 3) {
+		s = new TextDecoder("windows-1255").decode(buf);
+	  }
+	  return s;
+	}
 
     async function trackHfd(num, phone) {
       const apiUrl = "https://api.hfd.co.il/rest/v3/api/ship-locate-num-and-phone?num=" +
@@ -470,23 +472,23 @@ __HTML_START__
       return { Found: true, InternalNum: parsed.InternalNum, Events: parsed.Events };
     }
 
-    async function trackChita(num, phone) {
-      const step1Url = "https://chita-il.com/RunCom.Server/Request.aspx?APPNAME=RUN&PRGNAME=ship_locate_num_and_phone&ARGUMENTS=-N" +
-        encodeURIComponent(num) + ",-A" + encodeURIComponent(phone);
-      const xmlText = await fetchText(step1Url, {
-        headers: { "Accept": "application/xml, text/xml, */*; q=0.01", "X-Requested-With": "XMLHttpRequest" }
-      });
-      const message = getXmlTagValue(xmlText, "status_message");
-      const token = getXmlTagValue(xmlText, "ship_rand_num");
-      if (message) return { Found: false, Message: message };
-      if (!token) return { Found: false, Message: "no token returned" };
-      const html = await fetchDecoded(
-        "https://chita-il.com/RunCom.Server/Request.aspx?APPNAME=run&PRGNAME=ship_locate_random&ARGUMENTS=-A" + encodeURIComponent(token),
-        { headers: { "Accept": "text/html,*/*" } });
-      const parsed = parseRunComDetail(html);
-      if (!parsed.Events.length) return { Found: false, Message: "no events (possibly not found)" };
-      return { Found: true, InternalNum: parsed.InternalNum, Events: parsed.Events };
-    }
+	async function trackChita(num, phone) {
+	  const step1Url = "https://chita-il.com/RunCom.Server/Request.aspx?APPNAME=RUN&PRGNAME=ship_locate_num_and_phone&ARGUMENTS=-N" +
+		encodeURIComponent(num) + ",-A" + encodeURIComponent(phone);
+	  const xmlText = await fetchText(step1Url, {
+		headers: { "Accept": "application/xml, text/xml, */*; q=0.01", "X-Requested-With": "XMLHttpRequest" }
+	  });
+	  const message = getXmlTagValue(xmlText, "status_message");
+	  const token = getXmlTagValue(xmlText, "ship_rand_num");
+	  if (message) return { Found: false, Message: message };
+	  if (!token) return { Found: false, Message: "no token returned" };
+	  const html = await fetchDecoded(
+		"https://chita-il.com/RunCom.Server/Request.aspx?APPNAME=run&PRGNAME=ship_locate_random&ARGUMENTS=-A" + encodeURIComponent(token),
+		{ headers: { "Accept": "text/html,*/*" } });
+	  const parsed = parseRunComDetail(html);
+	  if (!parsed.Events.length) return { Found: false, Message: "no events (possibly not found)" };
+	  return { Found: true, InternalNum: parsed.InternalNum, Events: parsed.Events };
+	}
 
     // ---- GCX (SN..): ASP.NET postback done server-side by the local proxy at /gcx ----
     const GCX_BASE = PROXY_BASE.replace(/\?url=$/, "gcx?num=");
@@ -546,6 +548,23 @@ __HTML_START__
       return { Found: bestRef.current.length > 0, Events: bestRef.current, Raw: rawJson };
     }
 
+    async function trackExelot(num) {
+      const url = `https://apiv2p.exelot.com/api/v2/parcels/tracking/details/${encodeURIComponent(num)}`;
+      const rawJson = await fetchText(url, { headers: { "Accept": "application/json, text/plain, */*" } });
+      if (!rawJson || !rawJson.trim()) return { Found: false, Message: "empty response" };
+      let data;
+      try { data = JSON.parse(rawJson); } catch { return { Found: false, Message: "invalid JSON" }; }
+      const parcel = Array.isArray(data) ? data[0] : data;
+      const history = parcel && Array.isArray(parcel.statusHistory) ? parcel.statusHistory : [];
+      if (!parcel || !history.length) return { Found: false, Message: "not found / no data" };
+      return {
+        Found: true,
+        Status: parcel.parcelStatus || "",
+        Return: Boolean(parcel.isReturn),
+        Events: history
+      };
+    }
+
     function addRow(idx, num, carrier) {
       const tr = document.createElement("tr");
       const tdIdx = document.createElement("td"); tdIdx.textContent = idx;
@@ -581,7 +600,7 @@ __HTML_START__
       const phone = normalizePhone(txtPhone.value);
       clearResults();
 
-      if (!nums.length) { writeOut("No tracking numbers found (expected ED…, AE…, SN…, RS…Y)."); return; }
+      if (!nums.length) { writeOut("No tracking numbers found (expected ED…, AE…, SN…, XLT…, RS…Y)."); return; }
 
       const needPhone = nums.some((n) => { const c = detectCarrier(n); return c === "HFD" || c === "Chita"; });
       if (needPhone && !phone) { writeOut("A phone number is required for HFD / Cheetah numbers."); return; }
@@ -627,6 +646,21 @@ __HTML_START__
             } else {
               setCell(cell, res.Message || "Not found", false); bad++;
               writeOut(`GCX - ${num}: ${res.Message || "not found"}`); blockDivider();
+            }
+          } else if (carrier === "Exelot") {
+            const res = await trackExelot(num);
+            if (res.Found) {
+              const latestText = res.Events[0].statusText || res.Status || "Found";
+              const summaryText = res.Status ? `${res.Status} — ${latestText}` : latestText;
+              setCell(cell, summaryText, true); ok++;
+              writeOut(`Exelot - ${num}    Status: ${res.Status || "-"} | Return: ${res.Return}`);
+              for (const e of res.Events) {
+                writeOut(`    ${e.date || ""}  |  ${e.statusLocations || ""}  |  [${e.statusCode || ""}]  ${e.statusText || ""}`);
+              }
+              blockDivider();
+            } else {
+              setCell(cell, res.Message || "Not found", false); bad++;
+              writeOut(`Exelot - ${num}: ${res.Message || "not found"}`); blockDivider();
             }
           } else {
             const res = carrier === "Chita" ? await trackChita(num, phone) : await trackHfd(num, phone);

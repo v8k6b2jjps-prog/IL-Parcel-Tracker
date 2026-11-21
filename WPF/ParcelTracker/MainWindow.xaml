@@ -108,7 +108,7 @@
 
             <!-- Hint -->
             <TextBlock Grid.Row="1" Margin="2,12,0,0" Foreground="#828A94"
-                       Text="Auto-detect:   ED -&gt; HFD    AE -&gt; Chita    SN -&gt; GCX    RS -&gt; Israel Post"/>
+                       Text="Auto-detect:   ED -&gt; HFD    AE -&gt; Chita    SN -&gt; GCX    XLT -&gt; Exelot    RS -&gt; Israel Post"/>
 
             <!-- Button + status -->
             <Grid Grid.Row="2" Margin="0,16,0,0">
