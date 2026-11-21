@@ -1,7 +1,7 @@
 # IL Parcel Tracker
 
 Track Israeli parcel shipments by tracking number — **HFD**, **Chita (ציטה)**,
-**GCX** and **Israel Post (דואר ישראל)** — with the carrier auto-detected from
+**GCX**, **Exelot**, and **Israel Post (דואר ישראל)** — with the carrier auto-detected from
 the number prefix. Three independent, self-contained versions are included;
 pick whichever fits how you want to run it. No backend, no database, no install
 for the script versions.
@@ -28,11 +28,12 @@ version.
 | `ED…` | HFD | yes | RunCom 2-step: XML token → HTML timeline |
 | `AE…` | Chita (ציטה) | yes | RunCom 2-step, self-hosted |
 | `SN…` | GCX | no | ASP.NET postback (GET tokens → POST); hands off to YDM |
+| `XLT…` | Exelot | no | JSON API (`apiv2p.exelot.com`) |
 | `RS…` / `…IL` / other S10 | Israel Post | no | MyPost JSON API |
 
-**Detection order:** `ED` → HFD, `AE` → Chita, `SN` → GCX, then anything shaped
-like *two letters + digits (+ trailing letters)* → Israel Post. `ED`, `AE` and
-`SN` are pinned (proprietary, non-postal formats); every postal prefix is caught
+**Detection order:** `ED` → HFD, `AE` → Chita, `SN` → GCX, `XLT` → Exelot, then anything shaped
+like *two letters + digits (+ trailing letters)* → Israel Post. `ED`, `AE`, `SN`, and
+`XLT` are pinned (proprietary, non-postal formats); every postal prefix is caught
 generically, so new `R…`/`C…`/`E…` postal variants route to Israel Post
 automatically.
 
@@ -42,29 +43,21 @@ artifacts before matching, so pasting straight from an email or SMS works.
 ## Quick start
 
 **HTML (Invoke-WebApp)** — easiest, nothing to install:
-```
 Double-click Invoke-WebApp.cmd   (or Invoke-TrackingApp.lnk)
-```
 It launches a local proxy, opens the UI, and closes the proxy when you close the
 window. Paste one or many numbers, add a phone for HFD/Chita, and hit **Track all**.
 
 **PS1** — single-number WinForms GUI:
-```
 Right-click Parcel-Tracker.ps1 → Run with PowerShell
    or:  powershell -ExecutionPolicy Bypass -File .\Parcel-Tracker.ps1
-```
 
 **WPF** — native desktop app (needs the .NET SDK):
-```powershell
 cd WPF/ParcelTracker
 dotnet run
-```
 Or open `WPF/ParcelTracker.sln` in Visual Studio 2022 and press F5. For a
 single self-contained `.exe`:
-```powershell
 dotnet publish -c Release -r win-x64 --self-contained true `
   /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true
-```
 
 ## How it works
 
@@ -82,6 +75,7 @@ All versions share the same per-carrier logic:
   `ASP.NET_SessionId` cookie, then a POST submits the number. GCX is a
   China→Israel consolidator that hands the last mile to **YDM**; the timeline
   shows both the English and Hebrew event text, and no phone is required.
+- **Exelot** queries the **Exelot JSON API** (`https://apiv2p.exelot.com/api/v2/parcels/tracking/details/<num>`) by tracking number only (no phone required) and shows the parcel status, return flag (`isReturn`), and `statusHistory` timeline.
 
 Why a local proxy in the HTML version? A browser can't call the carrier APIs
 directly (CORS + custom headers), so `Invoke-WebApp.cmd` runs a tiny local
